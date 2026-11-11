@@ -1,0 +1,236 @@
+package com.example.notabs.service;
+
+
+import com.example.notabs.domain.Curso;
+import com.example.notabs.domain.Usuario;
+import com.example.notabs.dto.AuthDTO.TrocarSenhaDTO;
+import com.example.notabs.dto.CursoDTO.CursoRequestDTO;
+import com.example.notabs.dto.CursoDTO.CursoResponseDTO;
+import com.example.notabs.domain.enums.TipoCodigoEnum;
+import com.example.notabs.dto.UsuarioDTO.ExcluirContaDTO;
+import com.example.notabs.dto.UsuarioDTO.NovaMediaDTO;
+import com.example.notabs.dto.UsuarioDTO.UsuarioRequestDTO;
+import com.example.notabs.dto.UsuarioDTO.UsuarioResponseDTO;
+import com.example.notabs.dto.UsuarioDTO.UsuarioUpdateDTO;
+import com.example.notabs.exception.exceptions.SemestreInvalidoException;
+import com.example.notabs.exception.exceptions.SenhaIgualException;
+import com.example.notabs.exception.exceptions.CredenciaisInvalidasException;
+import com.example.notabs.exception.exceptions.EmailJaCadastradoException;
+import com.example.notabs.repository.AvaliacaoRepository;
+import com.example.notabs.repository.CodigoVerificacaoRepository;
+import com.example.notabs.repository.CursoRepository;
+import com.example.notabs.repository.DisciplinaRepository;
+import com.example.notabs.repository.HorarioRepository;
+import com.example.notabs.repository.TarefaRepository;
+import com.example.notabs.repository.UsuarioRepository;
+import jakarta.persistence.EntityNotFoundException;
+import jakarta.transaction.Transactional;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+
+import java.util.UUID;
+
+@Service
+@Transactional
+public class UsuarioService {
+
+    private final UsuarioRepository usuarioRepository;
+    private final CursoRepository cursoRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final DisciplinaRepository disciplinaRepository;
+    private final DisciplinaService disciplinaService;
+    private final VerificacaoService verificacaoService;
+    private final CodigoVerificacaoRepository codigoVerificacaoRepository;
+    private final TarefaRepository tarefaRepository;
+    private final AvaliacaoRepository avaliacaoRepository;
+    private final HorarioRepository horarioRepository;
+
+    public UsuarioService(UsuarioRepository usuarioRepository, CursoRepository cursoRepository, PasswordEncoder passwordEncoder,
+                          DisciplinaRepository disciplinaRepository, DisciplinaService disciplinaService,
+                          VerificacaoService verificacaoService, CodigoVerificacaoRepository codigoVerificacaoRepository,
+                          TarefaRepository tarefaRepository, AvaliacaoRepository avaliacaoRepository,
+                          HorarioRepository horarioRepository) {
+        this.usuarioRepository = usuarioRepository;
+        this.cursoRepository = cursoRepository;
+        this.passwordEncoder = passwordEncoder;
+        this.disciplinaRepository = disciplinaRepository;
+        this.disciplinaService = disciplinaService;
+        this.verificacaoService = verificacaoService;
+        this.codigoVerificacaoRepository = codigoVerificacaoRepository;
+        this.tarefaRepository = tarefaRepository;
+        this.avaliacaoRepository = avaliacaoRepository;
+        this.horarioRepository = horarioRepository;
+    }
+
+    private void validarSemestre(Integer semestre, Integer duracao) {
+        if (semestre != null && duracao != null && semestre > duracao) {
+            throw new SemestreInvalidoException("O semestre atual (" + semestre
+                    + ") não pode ser maior que a duração do curso (" + duracao + " semestres)");
+        }
+    }
+
+    public UsuarioResponseDTO criarUsuario(UsuarioRequestDTO dto) {
+        if (usuarioRepository.findByEmail(dto.email()).isPresent()) {
+            throw new EmailJaCadastradoException("Email já cadastrado");
+        }
+
+        Curso curso = new Curso();
+        curso.setNomeCurso(dto.curso().nomeCurso());
+        curso.setInstituicao(dto.curso().instituicao());
+        curso.setDuracao(dto.curso().duracao());
+
+        validarSemestre(dto.semestreAtual(), dto.curso().duracao());
+
+        Curso cursoSalvo = cursoRepository.save(curso);
+
+        Usuario usuario = new Usuario();
+        usuario.setNome(dto.nome());
+        usuario.setSobrenome(dto.sobrenome());
+        usuario.setEmail(dto.email());
+        usuario.setSenha(passwordEncoder.encode(dto.senha()));
+        usuario.setCurso(cursoSalvo);
+        usuario.setSemestreAtual(dto.semestreAtual());
+
+        Usuario salvo = usuarioRepository.save(usuario);
+        verificacaoService.gerarEEnviar(salvo, TipoCodigoEnum.VERIFICACAO_EMAIL);
+
+        return toResponseDTO(salvo);
+    }
+
+    public UsuarioResponseDTO atualizarUsuario(UUID id, UsuarioUpdateDTO dto) {
+        Usuario usuario = buscarEntidadePorId(id);
+
+        usuario.setNome(dto.nome());
+        usuario.setSobrenome(dto.sobrenome());
+        usuario.setSemestreAtual(dto.semestreAtual());
+
+        validarSemestre(dto.semestreAtual(), usuario.getCurso().getDuracao());
+
+        Usuario atualizado = usuarioRepository.save(usuario);
+        return toResponseDTO(atualizado);
+    }
+
+    public CursoResponseDTO atualizarCurso(UUID id, CursoRequestDTO dto) {
+        Usuario usuario = buscarEntidadePorId(id);
+        Curso curso = buscarCursoPorId(usuario.getCurso().getIdCurso());
+
+        curso.setNomeCurso(dto.nomeCurso());
+        curso.setInstituicao(dto.instituicao());
+        validarSemestre(usuario.getSemestreAtual(), dto.duracao());
+        curso.setDuracao(dto.duracao());
+
+        cursoRepository.save(curso);
+
+        return new CursoResponseDTO(
+                usuario.getCurso().getIdCurso(),
+                usuario.getCurso().getNomeCurso(),
+                usuario.getCurso().getInstituicao(),
+                usuario.getCurso().getDuracao()
+        );
+    }
+
+    public void trocarSenha(UUID id, TrocarSenhaDTO dto) {
+        Usuario usuario = buscarEntidadePorId(id);
+
+        if (!passwordEncoder.matches(dto.senhaAtual(), usuario.getSenha())) {
+            throw new CredenciaisInvalidasException("Senha atual incorreta");
+        }
+
+        if (!dto.novaSenha().equals(dto.novaSenhaConfirmada())) {
+            throw new CredenciaisInvalidasException("Novas senhas diferentes");
+        }
+
+        if (passwordEncoder.matches(dto.novaSenha(), usuario.getSenha())) {
+            throw new SenhaIgualException("A nova senha deve ser diferente da atual");
+        }
+
+        usuario.setSenha(passwordEncoder.encode(dto.novaSenha()));
+        usuario.setVersaoSessao((usuario.getVersaoSessao() == null ? 0 : usuario.getVersaoSessao()) + 1);
+        usuarioRepository.save(usuario);
+    }
+
+    public UsuarioResponseDTO buscarUsuarioPorId(UUID id) {
+        Usuario usuario = usuarioRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("Usuário não encontrado"));
+
+        return toResponseDTO(usuario);
+    }
+
+    private Usuario buscarEntidadePorId(UUID id) {
+        return usuarioRepository.findById(id).orElseThrow(() -> new EntityNotFoundException("Usuário não encontrado"));
+    }
+
+    private Curso buscarCursoPorId(UUID id) {
+        return cursoRepository.findById(id).orElseThrow(() -> new EntityNotFoundException("Curso não encontrado"));
+    }
+
+
+    public Double buscarMediaAprovacao(UUID idUsuarioLogado) {
+        Usuario usuario = usuarioRepository.findById(idUsuarioLogado).orElseThrow(
+                () -> new EntityNotFoundException("Usuário não encontrado.")
+        );
+
+        return usuario.getMediaAprovacao();
+    }
+
+    public void alterarMediaAprovacao(UUID idUsuarioLogado, NovaMediaDTO dto) {
+        Usuario usuario = usuarioRepository.findById(idUsuarioLogado).orElseThrow(
+                () -> new EntityNotFoundException("Usuário não encontrado.")
+        );
+
+        usuario.setMediaAprovacao(dto.novaMedia());
+        usuarioRepository.save(usuario);
+        disciplinaService.recalcularStatusDeTodasAsDisciplinas(idUsuarioLogado);
+    }
+
+    /** Desativa a conta (reversível via /auth/reativar). O token atual deixa de ser aceito. */
+    public void desativarUsuario(UUID id) {
+        Usuario usuario = buscarEntidadePorId(id);
+        usuario.setAtivo(false);
+        // invalida os tokens emitidos até aqui: ao reativar a conta, eles não voltam a valer
+        usuario.setVersaoSessao((usuario.getVersaoSessao() == null ? 0 : usuario.getVersaoSessao()) + 1);
+        usuarioRepository.save(usuario);
+    }
+
+    /** Exclui a conta e todos os dados do usuário em cascata. Exige a senha. */
+    public void excluirConta(UUID id, ExcluirContaDTO dto) {
+        Usuario usuario = buscarEntidadePorId(id);
+
+        if (!passwordEncoder.matches(dto.senha(), usuario.getSenha())) {
+            throw new CredenciaisInvalidasException("Senha incorreta");
+        }
+
+
+        Curso curso = usuario.getCurso();
+
+        avaliacaoRepository.deleteByDisciplinaUsuarioIdUsuario(id);
+        tarefaRepository.deleteByDisciplinaUsuarioIdUsuario(id);
+        horarioRepository.deleteByDisciplinaUsuarioIdUsuario(id);
+        disciplinaRepository.deleteByUsuarioIdUsuario(id);
+        codigoVerificacaoRepository.deleteByUsuarioIdUsuario(id);
+        usuarioRepository.delete(usuario);
+        if (curso != null) {
+            cursoRepository.delete(curso);
+        }
+    }
+
+    private UsuarioResponseDTO toResponseDTO(Usuario usuario) {
+        CursoResponseDTO cursoDTO = new CursoResponseDTO(
+                usuario.getCurso().getIdCurso(),
+                usuario.getCurso().getNomeCurso(),
+                usuario.getCurso().getInstituicao(),
+                usuario.getCurso().getDuracao()
+        );
+        return new UsuarioResponseDTO(
+                usuario.getIdUsuario(),
+                usuario.getNome(),
+                usuario.getSobrenome(),
+                usuario.getEmail(),
+                cursoDTO,
+                usuario.getSemestreAtual(),
+                usuario.isAtivo(),
+                usuario.isEmailVerificado()
+        );
+    }
+
+}

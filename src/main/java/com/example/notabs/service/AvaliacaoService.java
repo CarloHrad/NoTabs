@@ -1,0 +1,233 @@
+package com.example.notabs.service;
+
+import com.example.notabs.domain.Avaliacao;
+import com.example.notabs.domain.Disciplina;
+import com.example.notabs.domain.enums.TipoMediaEnum;
+import com.example.notabs.dto.AvaliacaoDTO.AvaliacaoConcluirDTO;
+import com.example.notabs.dto.AvaliacaoDTO.AvaliacaoRequestDTO;
+import com.example.notabs.dto.AvaliacaoDTO.AvaliacaoResponseDTO;
+import com.example.notabs.exception.exceptions.*;
+import com.example.notabs.repository.AvaliacaoRepository;
+import com.example.notabs.repository.DisciplinaRepository;
+import jakarta.persistence.EntityNotFoundException;
+import jakarta.transaction.Transactional;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.Objects;
+import java.util.UUID;
+
+@Service
+@Transactional
+public class AvaliacaoService {
+
+    private final AvaliacaoRepository avaliacaoRepository;
+    private final DisciplinaRepository disciplinaRepository;
+    private final DisciplinaService disciplinaService;
+    private final FusoHorarioService fusoHorarioService;
+
+    public AvaliacaoService(AvaliacaoRepository avaliacaoRepository,
+                            DisciplinaRepository disciplinaRepository,
+                            DisciplinaService disciplinaService,
+                            FusoHorarioService fusoHorarioService) {
+        this.avaliacaoRepository = avaliacaoRepository;
+        this.disciplinaRepository = disciplinaRepository;
+        this.disciplinaService = disciplinaService;
+        this.fusoHorarioService = fusoHorarioService;
+    }
+
+    public AvaliacaoResponseDTO criarAvaliacao(AvaliacaoRequestDTO dto, UUID idUsuarioLogado) {
+        Disciplina disciplina = buscarDisciplinaDoUsuario(dto.idDisciplina(), idUsuarioLogado);
+
+        if (disciplina.getArquivada()) {
+            throw new DisciplinaArquivadaException("Não é possível adicionar avaliação a uma disciplina arquivada");
+        }
+
+        if (disciplina.getTipoMedia() == null) {
+            throw new TipoMediaIndefinidaException("Defina o tipo de média da disciplina antes de cadastrar avaliações");
+        }
+
+        if (dto.notaObtida() != null && dto.notaObtida() > dto.notaMaxima()) {
+            throw new NotaInvalidaException(
+                    "Nota obtida não pode ser maior que a nota máxima (" + dto.notaMaxima() + ")");
+        }
+
+        Double peso = resolverPeso(disciplina, dto.peso());
+        boolean jaConcluida = dto.notaObtida() != null;
+
+        Avaliacao avaliacao = new Avaliacao();
+        avaliacao.setNomeAvaliacao(dto.nomeAvaliacao());
+        avaliacao.setDescricao(dto.descricao());
+        avaliacao.setDataAvaliacao(dto.dataAvaliacao());
+        avaliacao.setNotaMaxima(dto.notaMaxima());
+        avaliacao.setPeso(peso);
+        avaliacao.setNotaObtida(dto.notaObtida());
+        avaliacao.setConcluida(jaConcluida);
+        avaliacao.setDataConclusao(jaConcluida ? fusoHorarioService.agora() : null);
+        avaliacao.setDisciplina(disciplina);
+
+        Avaliacao salva = avaliacaoRepository.save(avaliacao);
+        disciplinaService.atualizarStatusDisciplina(disciplina.getIdDisciplina(), idUsuarioLogado);
+
+        return toResponseDTO(salva);
+    }
+
+    public AvaliacaoResponseDTO buscarAvaliacaoPorId(UUID id, UUID idUsuarioLogado) {
+        return toResponseDTO(buscarEntidadeDoUsuario(id, idUsuarioLogado));
+    }
+
+    public List<AvaliacaoResponseDTO> listarPorDisciplina(UUID idDisciplina, UUID idUsuarioLogado) {
+        buscarDisciplinaDoUsuario(idDisciplina, idUsuarioLogado);
+        return avaliacaoRepository.findByDisciplinaIdDisciplina(idDisciplina)
+                .stream()
+                .map(this::toResponseDTO)
+                .toList();
+    }
+
+    public AvaliacaoResponseDTO atualizarAvaliacao(UUID id, AvaliacaoRequestDTO dto, UUID idUsuarioLogado) {
+        Avaliacao avaliacao = buscarEntidadeDoUsuario(id, idUsuarioLogado);
+        Disciplina disciplina = avaliacao.getDisciplina();
+
+        if (!disciplina.getIdDisciplina().equals(dto.idDisciplina())) {
+            throw new DisciplinaImutavelException("Não é possível mover uma avaliação para outra disciplina. Exclua e crie novamente na disciplina correta.");
+        }
+
+        if (avaliacao.getConcluida()) {
+            boolean mudouNotaMaxima = !avaliacao.getNotaMaxima().equals(dto.notaMaxima());
+            boolean mudouPeso = disciplina.getTipoMedia() == TipoMediaEnum.PONDERADA
+                    && dto.peso() != null
+                    && !Objects.equals(avaliacao.getPeso(), dto.peso());
+            boolean mudouNota = dto.notaObtida() != null
+                    && !Objects.equals(avaliacao.getNotaObtida(), dto.notaObtida());
+
+            boolean tentandoAlterarCampoTravado = mudouNotaMaxima || mudouPeso || mudouNota;
+
+            if (tentandoAlterarCampoTravado) {
+                throw new AvaliacaoJaConcluidaException(
+                        "Avaliação já concluída: só é possível editar nome e descrição. Para alterar a nota, use reabrir + concluir novamente.");
+            }
+
+            avaliacao.setNomeAvaliacao(dto.nomeAvaliacao());
+            avaliacao.setDescricao(dto.descricao());
+            avaliacao.setDataAvaliacao(dto.dataAvaliacao());
+
+            return toResponseDTO(avaliacaoRepository.save(avaliacao));
+        }
+
+        if (dto.notaObtida() != null) {
+            throw new NotaInvalidaException(
+                    "Não é possível definir a nota por aqui. Use o endpoint de concluir avaliação.");
+        }
+
+        Double peso = resolverPeso(disciplina, dto.peso());
+
+        avaliacao.setNomeAvaliacao(dto.nomeAvaliacao());
+        avaliacao.setDescricao(dto.descricao());
+        avaliacao.setDataAvaliacao(dto.dataAvaliacao());
+        avaliacao.setNotaMaxima(dto.notaMaxima());
+        avaliacao.setPeso(peso);
+
+        return toResponseDTO(avaliacaoRepository.save(avaliacao));
+    }
+
+    public AvaliacaoResponseDTO concluirAvaliacao(UUID id, AvaliacaoConcluirDTO dto, UUID idUsuarioLogado) {
+        Avaliacao avaliacao = buscarEntidadeDoUsuario(id, idUsuarioLogado);
+
+        if (avaliacao.getDisciplina().getArquivada()) {
+            throw new DisciplinaArquivadaException("Não é possível concluir avaliação de uma disciplina arquivada");
+        }
+
+        Double nota = dto == null ? null : dto.notaObtida();
+
+        if (Boolean.TRUE.equals(avaliacao.getConcluida()) && avaliacao.getNotaObtida() != null) {
+            throw new AvaliacaoJaConcluidaException("Avaliação já está concluída");
+        }
+
+        if (nota != null && nota > avaliacao.getNotaMaxima()) {
+            throw new NotaInvalidaException(
+                    "Nota obtida não pode ser maior que a nota máxima (" + avaliacao.getNotaMaxima() + ")");
+        }
+
+        if (Boolean.TRUE.equals(avaliacao.getConcluida()) && nota == null) {
+            return toResponseDTO(avaliacao);
+        }
+
+        avaliacao.setNotaObtida(nota);
+        if (!Boolean.TRUE.equals(avaliacao.getConcluida())) {
+            avaliacao.setConcluida(true);
+            avaliacao.setDataConclusao(fusoHorarioService.agora());
+        }
+
+        Avaliacao atualizada = avaliacaoRepository.save(avaliacao);
+
+        disciplinaService.atualizarStatusDisciplina(avaliacao.getDisciplina().getIdDisciplina(), idUsuarioLogado);
+
+        return toResponseDTO(atualizada);
+    }
+
+    public AvaliacaoResponseDTO reabrirAvaliacao(UUID id, UUID idUsuarioLogado) {
+        Avaliacao avaliacao = buscarEntidadeDoUsuario(id, idUsuarioLogado);
+
+        if (avaliacao.getDisciplina().getArquivada()) {
+            throw new DisciplinaArquivadaException("Não é possível reabrir avaliação de uma disciplina arquivada");
+        }
+
+        if (!avaliacao.getConcluida()) {
+            throw new AvaliacaoNaoConcluidaException("Avaliação ainda não foi concluída");
+        }
+
+        avaliacao.setConcluida(false);
+        avaliacao.setNotaObtida(null);
+        avaliacao.setDataConclusao(null);
+
+        Avaliacao atualizada = avaliacaoRepository.save(avaliacao);
+
+        disciplinaService.atualizarStatusDisciplina(avaliacao.getDisciplina().getIdDisciplina(), idUsuarioLogado);
+
+        return toResponseDTO(atualizada);
+    }
+
+    public void deletarAvaliacao(UUID id, UUID idUsuarioLogado) {
+        Avaliacao avaliacao = buscarEntidadeDoUsuario(id, idUsuarioLogado);
+        UUID idDisciplina = avaliacao.getDisciplina().getIdDisciplina();
+
+        avaliacaoRepository.delete(avaliacao);
+        disciplinaService.atualizarStatusDisciplina(idDisciplina, idUsuarioLogado);
+    }
+
+    private Double resolverPeso(Disciplina disciplina, Double pesoInformado) {
+        if (disciplina.getTipoMedia() == TipoMediaEnum.PONDERADA && pesoInformado == null) {
+            throw new PesoObrigatorioException("Peso é obrigatório para disciplinas com média ponderada");
+        }
+        return disciplina.getTipoMedia() == TipoMediaEnum.SIMPLES ? 1.0 : pesoInformado;
+    }
+
+    private Disciplina buscarDisciplinaDoUsuario(UUID idDisciplina, UUID idUsuarioLogado) {
+        return disciplinaRepository.findByIdDisciplinaAndUsuarioIdUsuario(idDisciplina, idUsuarioLogado)
+                .orElseThrow(() -> new EntityNotFoundException("Disciplina não encontrada"));
+    }
+
+    private Avaliacao buscarEntidadeDoUsuario(UUID id, UUID idUsuarioLogado) {
+        return avaliacaoRepository.findByIdAvaliacaoAndDisciplinaUsuarioIdUsuario(id, idUsuarioLogado)
+                .orElseThrow(() -> new EntityNotFoundException("Avaliação não encontrada"));
+    }
+
+    private AvaliacaoResponseDTO toResponseDTO(Avaliacao avaliacao) {
+        return new AvaliacaoResponseDTO(
+                avaliacao.getIdAvaliacao(),
+                avaliacao.getNomeAvaliacao(),
+                avaliacao.getDescricao(),
+                avaliacao.getDataAvaliacao(),
+                avaliacao.getDataConclusao(),
+                avaliacao.getNotaObtida(),
+                avaliacao.getNotaMaxima(),
+                avaliacao.getPeso(),
+                avaliacao.getConcluida(),
+                avaliacao.getDisciplina().getNomeDisciplina(),
+                avaliacao.getNotaObtida() == null
+                        && (Boolean.TRUE.equals(avaliacao.getConcluida())
+                        || (avaliacao.getDataAvaliacao() != null
+                        && avaliacao.getDataAvaliacao().isBefore(fusoHorarioService.hoje())))
+        );
+    }
+}
