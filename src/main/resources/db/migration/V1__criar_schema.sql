@@ -1,4 +1,4 @@
--- Esquema inicial do notabs (PostgreSQL).
+-- Esquema inicial do Trinots (PostgreSQL).
 -- Os nomes seguem a convencao do Spring/Hibernate (camelCase -> snake_case), porque em producao
 -- o Hibernate roda com ddl-auto=validate e confere este esquema com as entidades.
 
