@@ -155,7 +155,8 @@ public class DisciplinaService {
                         a.getNotaObtida(), a.getNotaMaxima(), a.getPeso(), Boolean.TRUE.equals(a.getConcluida())))
                 .toList();
 
-        return MediaCalculator.calcular(disciplina.getTipoMedia(), itens, disciplina.getUsuario().getMediaAprovacao());
+        return MediaCalculator.calcular(disciplina.getTipoMedia(), itens,
+                disciplina.getUsuario().getMediaAprovacao(), MediaCalculator.PESO_TOTAL_PADRAO);
     }
 
     /**

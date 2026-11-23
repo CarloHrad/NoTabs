@@ -224,4 +224,24 @@ class MediaCalculatorTest {
         assertThat(r.todasConcluidas()).isFalse();
         assertThat(r.notaNecessariaRestantes()).isNotNull();
     }
+
+    @Test
+    @DisplayName("PONDERADA: uma avaliação com peso 3,5 não fecha a disciplina com peso total 10")
+    void pesoTotalNaoFechaComUmaAvaliacao() {
+        Resultado r = MediaCalculator.calcular(TipoMediaEnum.PONDERADA,
+                List.of(new Item(8.4, 10.0, 3.5, true)), 6.0, MediaCalculator.PESO_TOTAL_PADRAO);
+        assertThat(r.todasConcluidas()).isFalse();
+        assertThat(r.mediaAtual()).isCloseTo(8.4, within(0.001));
+        assertThat(r.notaNecessariaRestantes()).isCloseTo(4.7077, within(0.001));
+    }
+
+    @Test
+    @DisplayName("PONDERADA: pesos somando 10 e todos lançados fecham a disciplina")
+    void pesoTotalFechaQuandoSoma10() {
+        Resultado r = MediaCalculator.calcular(TipoMediaEnum.PONDERADA,
+                List.of(new Item(8.0, 10.0, 6.0, true), new Item(7.0, 10.0, 4.0, true)),
+                6.0, MediaCalculator.PESO_TOTAL_PADRAO);
+        assertThat(r.todasConcluidas()).isTrue();
+        assertThat(r.notaNecessariaRestantes()).isNull();
+    }
 }

@@ -7,6 +7,10 @@ import java.util.List;
 public final class MediaCalculator {
 
     public static final double ESCALA_MAXIMA = 10.0;
+
+    /** Peso total padrão de uma disciplina de média PONDERADA (os pesos devem somar 10). */
+    public static final double PESO_TOTAL_PADRAO = 10.0;
+
     private static final double TOLERANCIA = 1e-9;
 
     private MediaCalculator() {
@@ -30,14 +34,22 @@ public final class MediaCalculator {
         return notaObtida * ESCALA_MAXIMA / notaMaxima;
     }
 
+    /** Atalho sem peso total (comportamento anterior). */
     public static Resultado calcular(TipoMediaEnum tipo, List<Item> itens, double mediaAprovacao) {
+        return calcular(tipo, itens, mediaAprovacao, null);
+    }
+
+    /**
+     * @param pesoTotal peso total da disciplina (só vale para média PONDERADA). Se for maior que a soma dos
+     *                  pesos cadastrados, a diferença conta como peso ainda não lançado.
+     */
+    public static Resultado calcular(TipoMediaEnum tipo, List<Item> itens, double mediaAprovacao, Double pesoTotal) {
         if (tipo == null || itens == null || itens.isEmpty()) {
             return new Resultado(null, null, null, false, false);
         }
 
         double somaPesosTotal = 0.0;
         double somaPesosConcluidas = 0.0;
-        double somaPesosPendentes = 0.0;
         double somaPonderadaConcluidas = 0.0;
         int pendentes = 0;
         int concluidas = 0;
@@ -51,9 +63,14 @@ public final class MediaCalculator {
                 somaPonderadaConcluidas += notaNormalizada(item) * peso;
             } else {
                 pendentes++;
-                somaPesosPendentes += peso;
             }
         }
+
+        if (tipo == TipoMediaEnum.PONDERADA && pesoTotal != null && pesoTotal > somaPesosTotal) {
+            somaPesosTotal = pesoTotal;
+        }
+        double pesoRestante = somaPesosTotal - somaPesosConcluidas;
+        boolean temPesoRestante = pesoRestante > TOLERANCIA;
 
         Double mediaAtual = null;
         if (concluidas > 0) {
@@ -64,13 +81,13 @@ public final class MediaCalculator {
 
         Double notaNecessaria = null;
         boolean emRisco = false;
-        if (pendentes > 0 && somaPesosPendentes > 0) {
-            double necessaria = (mediaAprovacao * somaPesosTotal - somaPonderadaConcluidas) / somaPesosPendentes;
+        if (temPesoRestante) {
+            double necessaria = (mediaAprovacao * somaPesosTotal - somaPonderadaConcluidas) / pesoRestante;
             notaNecessaria = Math.max(0.0, necessaria);
             emRisco = notaNecessaria > ESCALA_MAXIMA + TOLERANCIA;
         }
 
-        return new Resultado(mediaAtual, projecao, notaNecessaria, emRisco, pendentes == 0);
+        return new Resultado(mediaAtual, projecao, notaNecessaria, emRisco, pendentes == 0 && !temPesoRestante);
     }
 
     /** Nota de uma avaliação na escala 0–10 (0 se ainda não houver nota). */
